@@ -132,7 +132,7 @@ async function fetchAllJobberJobs(token: string): Promise<JobberJob[]> {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
-        "X-JOBBER-GRAPHQL-VERSION": "2024-11-15",
+        "X-JOBBER-GRAPHQL-VERSION": "2025-04-16",
       },
       body: JSON.stringify({ query: JOBBER_JOBS_QUERY, variables: { cursor } }),
     });
