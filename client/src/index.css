@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Fonts ─────────────────────────────────────────── */
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,700&f[]=cabinet-grotesk@700,800&display=swap');
+
+/* ── Color tokens ───────────────────────────────────── */
+/* Palette: deep navy surfaces, bright green accent (money / growth) */
+@layer base {
+  :root {
+    --font-sans: 'Satoshi', 'Inter', sans-serif;
+    --font-display: 'Cabinet Grotesk', 'Satoshi', sans-serif;
+    /* shadcn required variables */
+    --background: 222 47% 6%;
+    --foreground: 210 20% 92%;
+    --card: 222 40% 9%;
+    --card-foreground: 210 20% 92%;
+    --popover: 222 40% 9%;
+    --popover-foreground: 210 20% 92%;
+    --primary: 142 72% 45%;
+    --primary-foreground: 222 47% 6%;
+    --secondary: 222 30% 15%;
+    --secondary-foreground: 210 15% 75%;
+    --muted: 222 30% 13%;
+    --muted-foreground: 210 12% 55%;
+    --accent: 142 72% 45%;
+    --accent-foreground: 222 47% 6%;
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 222 25% 18%;
+    --input: 222 25% 14%;
+    --ring: 142 72% 45%;
+    --radius: 0.5rem;
+
+    /* Chart colors */
+    --chart-1: 142 72% 45%;
+    --chart-2: 200 80% 55%;
+    --chart-3: 45 95% 55%;
+    --chart-4: 330 70% 60%;
+    --chart-5: 270 65% 65%;
+
+    /* Custom semantic tokens */
+    --color-profit: 142 72% 45%;
+    --color-loss: 0 70% 55%;
+    --color-neutral: 210 12% 55%;
+    --color-warning: 45 95% 55%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Satoshi', 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Cabinet Grotesk', 'Satoshi', sans-serif;
+    font-weight: 700;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+
+  /* Tabular numbers for money values */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+}
+
+/* ── Custom utilities ────────────────────────────────── */
+@layer components {
+  .stat-card {
+    @apply rounded-xl border bg-card p-5 flex flex-col gap-1;
+  }
+
+  .stat-value {
+    @apply text-2xl font-bold tabular-nums;
+    font-family: 'Cabinet Grotesk', sans-serif;
+  }
+
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-widest text-muted-foreground;
+  }
+
+  .margin-pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums;
+  }
+
+  .margin-pill-good {
+    @apply bg-green-500/15 text-green-400;
+  }
+
+  .margin-pill-ok {
+    @apply bg-yellow-500/15 text-yellow-400;
+  }
+
+  .margin-pill-bad {
+    @apply bg-red-500/15 text-red-400;
+  }
+
+  .input-money {
+    @apply tabular-nums;
+  }
+}
