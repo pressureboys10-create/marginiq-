@@ -21,7 +21,7 @@ function getOAuthConfig() {
 // ── Jobber GraphQL query ──────────────────────────────────────────────────────
 const JOBBER_JOBS_QUERY = `
   query SyncJobs($cursor: String) {
-    jobs(first: 50, after: $cursor, filter: { status: [ACTIVE, COMPLETED, ARCHIVED] }) {
+jobs(first: 50, after: $cursor) {
       nodes {
         id
         title
