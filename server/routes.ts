@@ -408,7 +408,12 @@ export function registerRoutes(httpServer: Server, app: Express) {
       fetchAllJobberJobs(tokenSet.accessToken)
         .then(async jobs => {
           const gasPrice = await fetchRaleighGasPrice();
-          const rows = await Promise.all(jobs.map(j => mapJobberJobToInsert(j, gasPrice)));
+          const rows: InsertJob[] = [];
+          for (const j of jobs) {
+            const row = await mapJobberJobToInsert(j, gasPrice);
+            rows.push(row);
+            await new Promise(r => setTimeout(r, 300));
+          }
           const result = storage.upsertJobberJobs(rows);
           console.log(`[Jobber] Initial sync: ${result.imported} imported, ${result.skipped} skipped (gas $${gasPrice}/gal)`);
         })
@@ -438,7 +443,13 @@ export function registerRoutes(httpServer: Server, app: Express) {
       const gasPrice = await fetchRaleighGasPrice();
       console.log(`[Jobber] Using gas price: $${gasPrice}/gal`);
 
-      const rows = await Promise.all(jobberJobs.map(j => mapJobberJobToInsert(j, gasPrice)));
+      // Process jobs sequentially with delay to avoid ORS rate limiting
+      const rows: InsertJob[] = [];
+      for (const j of jobberJobs) {
+        const row = await mapJobberJobToInsert(j, gasPrice);
+        rows.push(row);
+        await new Promise(r => setTimeout(r, 300)); // 300ms between requests
+      }
       const result = storage.upsertJobberJobs(rows);
 
       res.json({
