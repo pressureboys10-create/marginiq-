@@ -548,3 +548,44 @@ export function registerRoutes(httpServer: Server, app: Express) {
     res.json(storage.getMetrics());
   });
 }
+
+// ── Auto-sync scheduler ───────────────────────────────────────────────────────
+// Runs every hour automatically — only syncs new jobs, skips already-imported ones
+export async function startAutoSync() {
+  const INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+  async function runSync() {
+    try {
+      const token = await getValidAccessToken();
+      const jobberJobs = await fetchAllJobberJobs(token);
+      const gasPrice = await fetchRaleighGasPrice();
+
+      const rows: InsertJob[] = [];
+      for (const j of jobberJobs) {
+        const row = await mapJobberJobToInsert(j, gasPrice);
+        rows.push(row);
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      const result = storage.upsertJobberJobs(rows);
+      if (result.imported > 0) {
+        console.log(`[AutoSync] ${result.imported} new job(s) imported (gas $${gasPrice}/gal)`);
+      } else {
+        console.log(`[AutoSync] Up to date — ${result.skipped} jobs already synced`);
+      }
+    } catch (err: any) {
+      // Not connected yet or token expired — silently skip
+      if (!err.message?.includes("Not connected")) {
+        console.warn("[AutoSync] Error:", err.message);
+      }
+    }
+  }
+
+  // Run once on startup after a short delay, then every hour
+  setTimeout(() => {
+    runSync();
+    setInterval(runSync, INTERVAL_MS);
+  }, 10_000); // 10 second delay on startup
+
+  console.log("[AutoSync] Scheduler started — syncing every hour");
+}
