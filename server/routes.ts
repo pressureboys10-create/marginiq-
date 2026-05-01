@@ -438,30 +438,29 @@ export function registerRoutes(httpServer: Server, app: Express) {
     try {
       const token = await getValidAccessToken();
       const jobberJobs = await fetchAllJobberJobs(token);
-
-      // Fetch current Raleigh gas price once for the whole sync
       const gasPrice = await fetchRaleighGasPrice();
-      console.log(`[Jobber] Using gas price: $${gasPrice}/gal`);
+      console.log(`[Jobber] Using gas price: $${gasPrice}/gal, ${jobberJobs.length} jobs to process`);
 
-      // Process jobs sequentially with delay to avoid ORS rate limiting
-      const rows: InsertJob[] = [];
-      for (const j of jobberJobs) {
-        const row = await mapJobberJobToInsert(j, gasPrice);
-        rows.push(row);
-        await new Promise(r => setTimeout(r, 300)); // 300ms between requests
-      }
-      const result = storage.upsertJobberJobs(rows);
-
+      // Respond immediately so the request doesn't time out
       res.json({
         ok: true,
-        imported: result.imported,
-        skipped:  result.skipped,
-        total:    jobberJobs.length,
+        total: jobberJobs.length,
         gasPrice,
-        message:  result.imported > 0
-          ? `${result.imported} new job${result.imported !== 1 ? "s" : ""} imported from Jobber (gas $${gasPrice}/gal)`
-          : `Already up to date — ${result.skipped} job${result.skipped !== 1 ? "s" : ""} already synced`,
+        message: `Syncing ${jobberJobs.length} jobs in background (gas $${gasPrice}/gal) — check back in a minute`,
       });
+
+      // Process in background with rate limiting
+      (async () => {
+        const rows: InsertJob[] = [];
+        for (const j of jobberJobs) {
+          const row = await mapJobberJobToInsert(j, gasPrice);
+          rows.push(row);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        const result = storage.upsertJobberJobs(rows);
+        console.log(`[Jobber] Sync complete: ${result.imported} imported, ${result.skipped} skipped`);
+      })().catch(err => console.error("[Jobber] Background sync error:", err));
+
     } catch (err: any) {
       console.error("Jobber sync error:", err);
       res.status(502).json({ error: err.message ?? "Jobber sync failed" });
