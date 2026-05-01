@@ -273,11 +273,11 @@ async function mapJobberJobToInsert(j: JobberJob, gasPrice: number): Promise<Ins
 export function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Jobs CRUD ──────────────────────────────────────────────────────────────
-  app.get("/api/jobs", (_req, res) => {
+  app.get("/api/jobs", async (_req, res) => {
     res.json(await storage.getAllJobs());
   });
 
-  app.get("/api/jobs/:id", (req, res) => {
+  app.get("/api/jobs/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const job = await storage.getJob(id);
@@ -285,13 +285,13 @@ export function registerRoutes(httpServer: Server, app: Express) {
     res.json(job);
   });
 
-  app.post("/api/jobs", (req, res) => {
+  app.post("/api/jobs", async (req, res) => {
     const parsed = insertJobSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     res.status(201).json(await storage.createJob(parsed.data));
   });
 
-  app.patch("/api/jobs/:id", (req, res) => {
+  app.patch("/api/jobs/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const parsed = insertJobSchema.partial().safeParse(req.body);
@@ -302,12 +302,12 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   /** DELETE /api/jobs/all — wipe all jobs so Jobber re-sync recalculates travel costs */
-  app.delete("/api/jobs/all", (_req, res) => {
+  app.delete("/api/jobs/all", async (_req, res) => {
     const count = await storage.deleteAllJobs();
     res.json({ ok: true, deleted: count });
   });
 
-  app.delete("/api/jobs/:id", (req, res) => {
+  app.delete("/api/jobs/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     if (!await storage.deleteJob(id)) return res.status(404).json({ error: "Job not found" });
@@ -317,7 +317,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   // ── Jobber OAuth ───────────────────────────────────────────────────────────
 
   /** GET /api/jobber/status — returns connection state */
-  app.get("/api/jobber/status", (_req, res) => {
+  app.get("/api/jobber/status", async (_req, res) => {
     const { clientId } = getOAuthConfig();
     const tokens = await loadTokenSet();
     const configured = !!(clientId && process.env.JOBBER_CLIENT_SECRET);
@@ -330,7 +330,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   /** GET /api/jobber/connect — redirect browser to Jobber's OAuth authorization page */
-  app.get("/api/jobber/connect", (req, res) => {
+  app.get("/api/jobber/connect", async (req, res) => {
     const { clientId, redirectUri } = getOAuthConfig();
     if (!clientId) {
       return res.status(500).send(`
@@ -428,7 +428,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   /** POST /api/jobber/disconnect */
-  app.post("/api/jobber/disconnect", (_req, res) => {
+  app.post("/api/jobber/disconnect", async (_req, res) => {
     await clearTokenSet();
     res.json({ ok: true });
   });
@@ -468,23 +468,23 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ── Legacy: manual token endpoint (keep for backward compat) ──────────────
-  app.get("/api/settings/jobber-token", (_req, res) => {
+  app.get("/api/settings/jobber-token", async (_req, res) => {
     const token = await storage.getConfig("jobber_access_token");
     res.json({ hasToken: !!token, tokenPreview: token ? `…${token.slice(-6)}` : null });
   });
 
   // ── Marketing Spend CRUD ───────────────────────────────────────────────────
-  app.get("/api/marketing-spend", (_req, res) => {
+  app.get("/api/marketing-spend", async (_req, res) => {
     res.json(await storage.getAllMarketingSpend());
   });
 
-  app.post("/api/marketing-spend", (req, res) => {
+  app.post("/api/marketing-spend", async (req, res) => {
     const parsed = insertMarketingSpendSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     res.status(201).json(await storage.upsertMarketingSpend(parsed.data));
   });
 
-  app.delete("/api/marketing-spend/:id", (req, res) => {
+  app.delete("/api/marketing-spend/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     if (!await storage.deleteMarketingSpend(id)) return res.status(404).json({ error: "Not found" });
@@ -492,17 +492,17 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ── Leads CRUD ────────────────────────────────────────────────────────────
-  app.get("/api/leads", (_req, res) => {
+  app.get("/api/leads", async (_req, res) => {
     res.json(await storage.getAllLeads());
   });
 
-  app.post("/api/leads", (req, res) => {
+  app.post("/api/leads", async (req, res) => {
     const parsed = insertLeadSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     res.status(201).json(await storage.createLead(parsed.data));
   });
 
-  app.patch("/api/leads/:id", (req, res) => {
+  app.patch("/api/leads/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const parsed = insertLeadSchema.partial().safeParse(req.body);
@@ -512,7 +512,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
     res.json(lead);
   });
 
-  app.delete("/api/leads/:id", (req, res) => {
+  app.delete("/api/leads/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     if (!await storage.deleteLead(id)) return res.status(404).json({ error: "Not found" });
@@ -521,7 +521,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Public webhook: pressureboysnc.com form submissions ──────────────────
   // POST /api/leads/webhook  (no auth — called from Netlify site)
-  app.post("/api/leads/webhook", (req, res) => {
+  app.post("/api/leads/webhook", async (req, res) => {
     try {
       const body = req.body ?? {};
       const lead = await storage.createLead({
@@ -543,7 +543,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ── Metrics aggregate ─────────────────────────────────────────────────────
-  app.get("/api/metrics", (_req, res) => {
+  app.get("/api/metrics", async (_req, res) => {
     res.json(await storage.getMetrics());
   });
 }
