@@ -139,19 +139,19 @@ interface TokenSet {
   expiresAt: number; // Unix ms
 }
 
-function loadTokenSet(): TokenSet | null {
+async function loadTokenSet(): Promise<TokenSet | null> {
   const raw = await storage.getConfig("jobber_oauth_tokens");
   if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
+  try { return JSON.parse(raw) as TokenSet; } catch { return null; }
 }
 
-function saveTokenSet(t: TokenSet) {
+async function saveTokenSet(t: TokenSet) {
   await storage.setConfig("jobber_oauth_tokens", JSON.stringify(t));
   // Keep backward-compat key used by older sync code
   await storage.setConfig("jobber_access_token", t.accessToken);
 }
 
-function clearTokenSet() {
+async function clearTokenSet() {
   await storage.setConfig("jobber_oauth_tokens", "");
   await storage.setConfig("jobber_access_token", "");
 }
@@ -182,13 +182,13 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenSet> {
     refreshToken: data.refresh_token ?? refreshToken,
     expiresAt:    Date.now() + (data.expires_in ?? 3600) * 1000,
   };
-  saveTokenSet(set);
+  await saveTokenSet(set);
   return set;
 }
 
 /** Returns a valid access token, refreshing silently if expired */
 async function getValidAccessToken(): Promise<string> {
-  const t = loadTokenSet();
+  const t = await loadTokenSet();
   if (!t) throw new Error("Not connected to Jobber. Please connect in Settings.");
 
   // Refresh if within 2 minutes of expiry
@@ -319,7 +319,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   /** GET /api/jobber/status — returns connection state */
   app.get("/api/jobber/status", (_req, res) => {
     const { clientId } = getOAuthConfig();
-    const tokens = loadTokenSet();
+    const tokens = await loadTokenSet();
     const configured = !!(clientId && process.env.JOBBER_CLIENT_SECRET);
 
     res.json({
@@ -402,7 +402,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
         refreshToken: data.refresh_token,
         expiresAt:    Date.now() + (data.expires_in ?? 3600) * 1000,
       };
-      saveTokenSet(tokenSet);
+      await saveTokenSet(tokenSet);
 
       // Kick off an immediate background sync
       fetchAllJobberJobs(tokenSet.accessToken)
@@ -429,7 +429,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   /** POST /api/jobber/disconnect */
   app.post("/api/jobber/disconnect", (_req, res) => {
-    clearTokenSet();
+    await clearTokenSet();
     res.json({ ok: true });
   });
 
@@ -524,7 +524,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/leads/webhook", (req, res) => {
     try {
       const body = req.body ?? {};
-      const lead = storage.createLead({
+      const lead = await storage.createLead({
         date: new Date().toISOString().slice(0, 10),
         source: "Google Business", // default for website form submissions
         converted: 0,
