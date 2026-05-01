@@ -19,6 +19,9 @@ function getOAuthConfig() {
 }
 
 // ── Jobber GraphQL query ──────────────────────────────────────────────────────
+const START_ADDRESS = "300 Lake Boone Trl, Raleigh, NC 27608";
+const START_COORDS  = { lng: -78.6918, lat: 35.8070 };
+const MPG           = 12;
 const JOBBER_JOBS_QUERY = `
   query SyncJobs($cursor: String) {
 jobs(first: 50, after: $cursor) {
