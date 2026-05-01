@@ -1,5 +1,5 @@
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import { eq, desc } from "drizzle-orm";
 import {
   jobs, config, marketingSpend, leads,
@@ -8,66 +8,72 @@ import {
   type Lead, type InsertLead,
 } from "@shared/schema";
 
-const sqlite = new Database("jobs.db");
-const db = drizzle(sqlite);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("railway.internal")
+    ? false
+    : { rejectUnauthorized: false },
+});
+const db = drizzle(pool);
 
 // ── Migrations ─────────────────────────────────────────────────────────────────
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    client TEXT,
-    date TEXT NOT NULL,
-    job_price REAL NOT NULL,
-    supply_cost REAL NOT NULL DEFAULT 0,
-    labor_cost REAL NOT NULL DEFAULT 0,
-    gas_cost REAL NOT NULL DEFAULT 0,
-    equipment_cost REAL NOT NULL DEFAULT 0,
-    other_cost REAL NOT NULL DEFAULT 0,
-    notes TEXT,
-    category TEXT,
-    external_id TEXT,
-    lead_source TEXT
-  )
-`);
+async function runMigrations() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS jobs (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        client TEXT,
+        date TEXT NOT NULL,
+        job_price REAL NOT NULL,
+        supply_cost REAL NOT NULL DEFAULT 0,
+        labor_cost REAL NOT NULL DEFAULT 0,
+        gas_cost REAL NOT NULL DEFAULT 0,
+        equipment_cost REAL NOT NULL DEFAULT 0,
+        other_cost REAL NOT NULL DEFAULT 0,
+        notes TEXT,
+        category TEXT,
+        external_id TEXT,
+        lead_source TEXT
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS marketing_spend (
+        id SERIAL PRIMARY KEY,
+        month TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0,
+        notes TEXT
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        source TEXT NOT NULL,
+        converted INTEGER NOT NULL DEFAULT 0,
+        name TEXT,
+        email TEXT,
+        phone TEXT,
+        message TEXT,
+        form_data TEXT
+      )
+    `);
+    console.log("[DB] Migrations complete");
+  } finally {
+    client.release();
+  }
+}
 
-// Idempotent column additions (SQLite does not allow UNIQUE on ALTER TABLE)
-const addIfMissing = (table: string, column: string, def: string) => {
-  try { sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`); } catch (_) {}
-};
-addIfMissing("jobs", "external_id", "TEXT");
-addIfMissing("jobs", "lead_source", "TEXT");
-
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  )
-`);
-
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS marketing_spend (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    month TEXT NOT NULL,
-    channel TEXT NOT NULL,
-    amount REAL NOT NULL DEFAULT 0,
-    notes TEXT
-  )
-`);
-
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS leads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    source TEXT NOT NULL,
-    converted INTEGER NOT NULL DEFAULT 0,
-    name TEXT,
-    email TEXT,
-    phone TEXT,
-    message TEXT,
-    form_data TEXT
-  )
-`);
+// Run migrations immediately
+runMigrations().catch(err => console.error("[DB] Migration error:", err));
 
 // ── Storage interface ──────────────────────────────────────────────────────────
 export interface IStorage {
@@ -150,45 +156,45 @@ export interface MetricsData {
 // ── Implementation ─────────────────────────────────────────────────────────────
 export const storage: IStorage = {
   // ── Jobs ────────────────────────────────────────────────────────────────────
-  getAllJobs(): Job[] {
-    return db.select().from(jobs).orderBy(desc(jobs.date)).all();
+  async getAllJobs(): Promise<Job[]> {
+    return db.select().from(jobs).orderBy(desc(jobs.date));
   },
 
-  getJob(id: number): Job | undefined {
-    return db.select().from(jobs).where(eq(jobs.id, id)).get();
+  async getJob(id: number): Promise<Job | undefined> {
+    const result = await db.select().from(jobs).where(eq(jobs.id, id));
+    return result[0];
   },
 
-  createJob(data: InsertJob): Job {
-    return db.insert(jobs).values(data).returning().get();
+  async createJob(data: InsertJob): Promise<Job> {
+    const result = await db.insert(jobs).values(data).returning();
+    return result[0];
   },
 
-  updateJob(id: number, data: Partial<InsertJob>): Job | undefined {
-    const existing = db.select().from(jobs).where(eq(jobs.id, id)).get();
-    if (!existing) return undefined;
-    return db.update(jobs).set(data).where(eq(jobs.id, id)).returning().get();
+  async updateJob(id: number, data: Partial<InsertJob>): Promise<Job | undefined> {
+    const result = await db.update(jobs).set(data).where(eq(jobs.id, id)).returning();
+    return result[0];
   },
 
-  deleteJob(id: number): boolean {
-    const result = db.delete(jobs).where(eq(jobs.id, id)).run();
-    return result.changes > 0;
+  async deleteJob(id: number): Promise<boolean> {
+    const result = await db.delete(jobs).where(eq(jobs.id, id)).returning();
+    return result.length > 0;
   },
 
-  deleteAllJobs(): number {
-    const result = sqlite.prepare(`DELETE FROM jobs`).run();
-    return result.changes;
+  async deleteAllJobs(): Promise<number> {
+    const result = await pool.query(`DELETE FROM jobs`);
+    return result.rowCount ?? 0;
   },
 
-  upsertJobberJobs(rows: InsertJob[]): { imported: number; skipped: number } {
+  async upsertJobberJobs(rows: InsertJob[]): Promise<{ imported: number; skipped: number }> {
     let imported = 0;
     let skipped = 0;
     for (const row of rows) {
       if (!row.externalId) continue;
-      const stmt = sqlite.prepare(`SELECT id FROM jobs WHERE external_id = ?`);
-      const existing = stmt.get(row.externalId);
-      if (existing) {
+      const existing = await pool.query(`SELECT id FROM jobs WHERE external_id = $1`, [row.externalId]);
+      if (existing.rows.length > 0) {
         skipped++;
       } else {
-        db.insert(jobs).values(row).run();
+        await db.insert(jobs).values(row);
         imported++;
       }
     }
@@ -196,73 +202,70 @@ export const storage: IStorage = {
   },
 
   // ── Config ──────────────────────────────────────────────────────────────────
-  getConfig(key: string): string | null {
-    const row = db.select().from(config).where(eq(config.key, key)).get();
-    return row ? row.value : null;
+  async getConfig(key: string): Promise<string | null> {
+    const result = await pool.query(`SELECT value FROM config WHERE key = $1`, [key]);
+    return result.rows[0]?.value ?? null;
   },
 
-  setConfig(key: string, value: string): void {
-    sqlite.prepare(
-      `INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    ).run(key, value);
+  async setConfig(key: string, value: string): Promise<void> {
+    await pool.query(
+      `INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, value]
+    );
   },
 
   // ── Marketing Spend ──────────────────────────────────────────────────────────
-  getAllMarketingSpend(): MarketingSpend[] {
-    return db.select().from(marketingSpend).orderBy(desc(marketingSpend.month)).all();
+  async getAllMarketingSpend(): Promise<MarketingSpend[]> {
+    return db.select().from(marketingSpend).orderBy(desc(marketingSpend.month));
   },
 
-  getMarketingSpendByMonth(month: string): MarketingSpend[] {
-    return db.select().from(marketingSpend).where(eq(marketingSpend.month, month)).all();
+  async getMarketingSpendByMonth(month: string): Promise<MarketingSpend[]> {
+    return db.select().from(marketingSpend).where(eq(marketingSpend.month, month));
   },
 
-  upsertMarketingSpend(data: InsertMarketingSpend): MarketingSpend {
-    // Try to find existing row with same month + channel
-    const existing = sqlite.prepare(
-      `SELECT id FROM marketing_spend WHERE month = ? AND channel = ?`
-    ).get(data.month, data.channel) as { id: number } | undefined;
-
-    if (existing) {
-      return db
-        .update(marketingSpend)
-        .set(data)
-        .where(eq(marketingSpend.id, existing.id))
-        .returning()
-        .get();
+  async upsertMarketingSpend(data: InsertMarketingSpend): Promise<MarketingSpend> {
+    const existing = await pool.query(
+      `SELECT id FROM marketing_spend WHERE month = $1 AND channel = $2`,
+      [data.month, data.channel]
+    );
+    if (existing.rows.length > 0) {
+      const result = await db.update(marketingSpend).set(data).where(eq(marketingSpend.id, existing.rows[0].id)).returning();
+      return result[0];
     }
-    return db.insert(marketingSpend).values(data).returning().get();
+    const result = await db.insert(marketingSpend).values(data).returning();
+    return result[0];
   },
 
-  deleteMarketingSpend(id: number): boolean {
-    const result = db.delete(marketingSpend).where(eq(marketingSpend.id, id)).run();
-    return result.changes > 0;
+  async deleteMarketingSpend(id: number): Promise<boolean> {
+    const result = await db.delete(marketingSpend).where(eq(marketingSpend.id, id)).returning();
+    return result.length > 0;
   },
 
   // ── Leads ────────────────────────────────────────────────────────────────────
-  getAllLeads(): Lead[] {
-    return db.select().from(leads).orderBy(desc(leads.date)).all();
+  async getAllLeads(): Promise<Lead[]> {
+    return db.select().from(leads).orderBy(desc(leads.date));
   },
 
-  createLead(data: InsertLead): Lead {
-    return db.insert(leads).values(data).returning().get();
+  async createLead(data: InsertLead): Promise<Lead> {
+    const result = await db.insert(leads).values(data).returning();
+    return result[0];
   },
 
-  updateLead(id: number, data: Partial<InsertLead>): Lead | undefined {
-    const existing = db.select().from(leads).where(eq(leads.id, id)).get();
-    if (!existing) return undefined;
-    return db.update(leads).set(data).where(eq(leads.id, id)).returning().get();
+  async updateLead(id: number, data: Partial<InsertLead>): Promise<Lead | undefined> {
+    const result = await db.update(leads).set(data).where(eq(leads.id, id)).returning();
+    return result[0];
   },
 
-  deleteLead(id: number): boolean {
-    const result = db.delete(leads).where(eq(leads.id, id)).run();
-    return result.changes > 0;
+  async deleteLead(id: number): Promise<boolean> {
+    const result = await db.delete(leads).where(eq(leads.id, id)).returning();
+    return result.length > 0;
   },
 
   // ── Metrics aggregate ─────────────────────────────────────────────────────────
-  getMetrics(): MetricsData {
-    const allJobs = db.select().from(jobs).all();
-    const allSpend = db.select().from(marketingSpend).all();
-    const allLeads = db.select().from(leads).orderBy(desc(leads.date)).all();
+  async getMetrics(): Promise<MetricsData> {
+    const allJobs = await db.select().from(jobs);
+    const allSpend = await db.select().from(marketingSpend);
+    const allLeads = await db.select().from(leads).orderBy(desc(leads.date));
 
     // ── Job value ──────────────────────────────────────────────────────────────
     const totalRevenue = allJobs.reduce((s, j) => s + j.jobPrice, 0);
