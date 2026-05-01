@@ -140,20 +140,20 @@ interface TokenSet {
 }
 
 function loadTokenSet(): TokenSet | null {
-  const raw = storage.getConfig("jobber_oauth_tokens");
+  const raw = await storage.getConfig("jobber_oauth_tokens");
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
 
 function saveTokenSet(t: TokenSet) {
-  storage.setConfig("jobber_oauth_tokens", JSON.stringify(t));
+  await storage.setConfig("jobber_oauth_tokens", JSON.stringify(t));
   // Keep backward-compat key used by older sync code
-  storage.setConfig("jobber_access_token", t.accessToken);
+  await storage.setConfig("jobber_access_token", t.accessToken);
 }
 
 function clearTokenSet() {
-  storage.setConfig("jobber_oauth_tokens", "");
-  storage.setConfig("jobber_access_token", "");
+  await storage.setConfig("jobber_oauth_tokens", "");
+  await storage.setConfig("jobber_access_token", "");
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<TokenSet> {
@@ -274,13 +274,13 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Jobs CRUD ──────────────────────────────────────────────────────────────
   app.get("/api/jobs", (_req, res) => {
-    res.json(storage.getAllJobs());
+    res.json(await storage.getAllJobs());
   });
 
   app.get("/api/jobs/:id", (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-    const job = storage.getJob(id);
+    const job = await storage.getJob(id);
     if (!job) return res.status(404).json({ error: "Job not found" });
     res.json(job);
   });
@@ -288,7 +288,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/jobs", (req, res) => {
     const parsed = insertJobSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    res.status(201).json(storage.createJob(parsed.data));
+    res.status(201).json(await storage.createJob(parsed.data));
   });
 
   app.patch("/api/jobs/:id", (req, res) => {
@@ -296,21 +296,21 @@ export function registerRoutes(httpServer: Server, app: Express) {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const parsed = insertJobSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const job = storage.updateJob(id, parsed.data);
+    const job = await storage.updateJob(id, parsed.data);
     if (!job) return res.status(404).json({ error: "Job not found" });
     res.json(job);
   });
 
   /** DELETE /api/jobs/all — wipe all jobs so Jobber re-sync recalculates travel costs */
   app.delete("/api/jobs/all", (_req, res) => {
-    const count = storage.deleteAllJobs();
+    const count = await storage.deleteAllJobs();
     res.json({ ok: true, deleted: count });
   });
 
   app.delete("/api/jobs/:id", (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-    if (!storage.deleteJob(id)) return res.status(404).json({ error: "Job not found" });
+    if (!await storage.deleteJob(id)) return res.status(404).json({ error: "Job not found" });
     res.status(204).send();
   });
 
@@ -344,7 +344,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
     // CSRF state token
     const state = crypto.randomBytes(16).toString("hex");
-    storage.setConfig("jobber_oauth_state", state);
+    await storage.setConfig("jobber_oauth_state", state);
 
     const url = new URL(JOBBER_AUTHORIZE_URL);
     url.searchParams.set("response_type", "code");
@@ -366,11 +366,11 @@ export function registerRoutes(httpServer: Server, app: Express) {
     }
 
     // CSRF check
-    const savedState = storage.getConfig("jobber_oauth_state");
+    const savedState = await storage.getConfig("jobber_oauth_state");
     if (!state || state !== savedState) {
       return res.redirect("/#/settings?jobber=error&reason=state_mismatch");
     }
-    storage.setConfig("jobber_oauth_state", ""); // consume state
+    await storage.setConfig("jobber_oauth_state", ""); // consume state
 
     if (!code) {
       return res.redirect("/#/settings?jobber=error&reason=no_code");
@@ -414,7 +414,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
             rows.push(row);
             await new Promise(r => setTimeout(r, 300));
           }
-          const result = storage.upsertJobberJobs(rows);
+          const result = await storage.upsertJobberJobs(rows);
           console.log(`[Jobber] Initial sync: ${result.imported} imported, ${result.skipped} skipped (gas $${gasPrice}/gal)`);
         })
         .catch(err => console.error("[Jobber] Initial sync error:", err));
@@ -457,7 +457,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
           rows.push(row);
           await new Promise(r => setTimeout(r, 300));
         }
-        const result = storage.upsertJobberJobs(rows);
+        const result = await storage.upsertJobberJobs(rows);
         console.log(`[Jobber] Sync complete: ${result.imported} imported, ${result.skipped} skipped`);
       })().catch(err => console.error("[Jobber] Background sync error:", err));
 
@@ -469,37 +469,37 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Legacy: manual token endpoint (keep for backward compat) ──────────────
   app.get("/api/settings/jobber-token", (_req, res) => {
-    const token = storage.getConfig("jobber_access_token");
+    const token = await storage.getConfig("jobber_access_token");
     res.json({ hasToken: !!token, tokenPreview: token ? `…${token.slice(-6)}` : null });
   });
 
   // ── Marketing Spend CRUD ───────────────────────────────────────────────────
   app.get("/api/marketing-spend", (_req, res) => {
-    res.json(storage.getAllMarketingSpend());
+    res.json(await storage.getAllMarketingSpend());
   });
 
   app.post("/api/marketing-spend", (req, res) => {
     const parsed = insertMarketingSpendSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    res.status(201).json(storage.upsertMarketingSpend(parsed.data));
+    res.status(201).json(await storage.upsertMarketingSpend(parsed.data));
   });
 
   app.delete("/api/marketing-spend/:id", (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-    if (!storage.deleteMarketingSpend(id)) return res.status(404).json({ error: "Not found" });
+    if (!await storage.deleteMarketingSpend(id)) return res.status(404).json({ error: "Not found" });
     res.status(204).send();
   });
 
   // ── Leads CRUD ────────────────────────────────────────────────────────────
   app.get("/api/leads", (_req, res) => {
-    res.json(storage.getAllLeads());
+    res.json(await storage.getAllLeads());
   });
 
   app.post("/api/leads", (req, res) => {
     const parsed = insertLeadSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    res.status(201).json(storage.createLead(parsed.data));
+    res.status(201).json(await storage.createLead(parsed.data));
   });
 
   app.patch("/api/leads/:id", (req, res) => {
@@ -507,7 +507,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const parsed = insertLeadSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const lead = storage.updateLead(id, parsed.data);
+    const lead = await storage.updateLead(id, parsed.data);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     res.json(lead);
   });
@@ -515,7 +515,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
   app.delete("/api/leads/:id", (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-    if (!storage.deleteLead(id)) return res.status(404).json({ error: "Not found" });
+    if (!await storage.deleteLead(id)) return res.status(404).json({ error: "Not found" });
     res.status(204).send();
   });
 
@@ -544,7 +544,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   // ── Metrics aggregate ─────────────────────────────────────────────────────
   app.get("/api/metrics", (_req, res) => {
-    res.json(storage.getMetrics());
+    res.json(await storage.getMetrics());
   });
 }
 
@@ -566,7 +566,7 @@ export async function startAutoSync() {
         await new Promise(r => setTimeout(r, 300));
       }
 
-      const result = storage.upsertJobberJobs(rows);
+      const result = await storage.upsertJobberJobs(rows);
       if (result.imported > 0) {
         console.log(`[AutoSync] ${result.imported} new job(s) imported (gas $${gasPrice}/gal)`);
       } else {
