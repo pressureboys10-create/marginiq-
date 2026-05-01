@@ -78,6 +78,7 @@ export interface IStorage {
   updateJob(id: number, data: Partial<InsertJob>): Job | undefined;
   deleteJob(id: number): boolean;
   upsertJobberJobs(rows: InsertJob[]): { imported: number; skipped: number };
+  deleteAllJobs(): number;
 
   // Config
   getConfig(key: string): string | null;
@@ -170,6 +171,11 @@ export const storage: IStorage = {
   deleteJob(id: number): boolean {
     const result = db.delete(jobs).where(eq(jobs.id, id)).run();
     return result.changes > 0;
+  },
+
+  deleteAllJobs(): number {
+    const result = sqlite.prepare(`DELETE FROM jobs`).run();
+    return result.changes;
   },
 
   upsertJobberJobs(rows: InsertJob[]): { imported: number; skipped: number } {
