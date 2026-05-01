@@ -19,12 +19,14 @@ function getOAuthConfig() {
 }
 
 // ── Jobber GraphQL query ──────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 const START_ADDRESS = "300 Lake Boone Trl, Raleigh, NC 27608";
-const START_COORDS  = { lng: -78.6918, lat: 35.8070 };
+const START_COORDS  = { lng: -78.6918, lat: 35.8070 }; // 300 Lake Boone Trl
 const MPG           = 12;
+
 const JOBBER_JOBS_QUERY = `
   query SyncJobs($cursor: String) {
-jobs(first: 50, after: $cursor) {
+    jobs(first: 50, after: $cursor) {
       nodes {
         id
         title
@@ -36,6 +38,14 @@ jobs(first: 50, after: $cursor) {
           name
           firstName
           lastName
+        }
+        property {
+          address {
+            street
+            city
+            province
+            postalCode
+          }
         }
         lineItems {
           nodes { name }
@@ -54,7 +64,72 @@ interface JobberJob {
   createdAt: string;
   jobStatus: string;
   client: { name: string; firstName: string; lastName: string };
+  property?: {
+    address?: {
+      street?: string;
+      city?: string;
+      province?: string;
+      postalCode?: string;
+    };
+  };
   lineItems: { nodes: Array<{ name: string }> };
+}
+
+// ── Gas price fetching ────────────────────────────────────────────────────────
+async function fetchRaleighGasPrice(): Promise<number> {
+  try {
+    const resp = await fetch("https://gasprices.aaa.com/?state=NC", {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    const html = await resp.text();
+    // Parse the Wake County / Raleigh average from AAA page
+    const match = html.match(/\$([0-9]+\.[0-9]+)/);
+    if (match) {
+      const price = parseFloat(match[1]);
+      if (price > 2 && price < 8) return price;
+    }
+  } catch (e) {
+    console.warn("Gas price fetch failed, using fallback:", e);
+  }
+  return 4.01; // Raleigh fallback as of Apr 2026
+}
+
+// ── Distance calculation via OpenRouteService ─────────────────────────────────
+async function calcTravelCost(address: string, gasPrice: number): Promise<number> {
+  const apiKey = process.env.ORS_API_KEY;
+  if (!apiKey) return 0;
+
+  try {
+    // Geocode the destination address
+    const geoResp = await fetch(
+      `https://api.openrouteservice.org/geocode/search?api_key=${apiKey}&text=${encodeURIComponent(address)}&boundary.country=US&size=1`,
+      { headers: { "User-Agent": "MarginIQ/1.0" } }
+    );
+    const geoData = await geoResp.json() as any;
+    const coords = geoData?.features?.[0]?.geometry?.coordinates;
+    if (!coords) return 0;
+
+    const [destLng, destLat] = coords;
+
+    // Get driving distance
+    const routeResp = await fetch(
+      `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${apiKey}&start=${START_COORDS.lng},${START_COORDS.lat}&end=${destLng},${destLat}`,
+      { headers: { "User-Agent": "MarginIQ/1.0" } }
+    );
+    const routeData = await routeResp.json() as any;
+    const distanceMeters = routeData?.features?.[0]?.properties?.segments?.[0]?.distance;
+    if (!distanceMeters) return 0;
+
+    const miles = distanceMeters / 1609.34;
+    const roundTripMiles = miles * 2;
+    const gallonsUsed = roundTripMiles / MPG;
+    const cost = gallonsUsed * gasPrice;
+
+    return Math.round(cost * 100) / 100; // round to cents
+  } catch (e) {
+    console.warn("Travel cost calc failed for address:", address, e);
+    return 0;
+  }
 }
 
 // ── Token management ──────────────────────────────────────────────────────────
@@ -162,7 +237,7 @@ async function fetchAllJobberJobs(token: string): Promise<JobberJob[]> {
   return all;
 }
 
-function mapJobberJobToInsert(j: JobberJob): InsertJob {
+async function mapJobberJobToInsert(j: JobberJob, gasPrice: number): Promise<InsertJob> {
   const rawDate  = j.completedAt ?? j.createdAt;
   const date     = rawDate ? rawDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
   const lineItem = j.lineItems?.nodes?.[0]?.name;
@@ -171,15 +246,24 @@ function mapJobberJobToInsert(j: JobberJob): InsertJob {
     || `${j.client?.firstName ?? ""} ${j.client?.lastName ?? ""}`.trim()
     || "Unknown";
 
+  // Build address string from property
+  const addr = j.property?.address;
+  const fullAddress = addr
+    ? [addr.street, addr.city, addr.province, addr.postalCode].filter(Boolean).join(", ")
+    : null;
+
+  // Calculate travel cost if we have an address
+  const gasCost = fullAddress ? await calcTravelCost(fullAddress, gasPrice) : 0;
+
   return {
     name, client, date,
     jobPrice:      j.total ?? 0,
     supplyCost:    0,
     laborCost:     0,
-    gasCost:       0,
+    gasCost,
     equipmentCost: 0,
     otherCost:     0,
-    notes:         null,
+    notes:         fullAddress ? `Address: ${fullAddress}` : null,
     category:      null,
     externalId:    j.id,
   };
@@ -215,6 +299,12 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const job = storage.updateJob(id, parsed.data);
     if (!job) return res.status(404).json({ error: "Job not found" });
     res.json(job);
+  });
+
+  /** DELETE /api/jobs/all — wipe all jobs so Jobber re-sync recalculates travel costs */
+  app.delete("/api/jobs/all", (_req, res) => {
+    const count = storage.deleteAllJobs();
+    res.json({ ok: true, deleted: count });
   });
 
   app.delete("/api/jobs/:id", (req, res) => {
@@ -316,10 +406,11 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
       // Kick off an immediate background sync
       fetchAllJobberJobs(tokenSet.accessToken)
-        .then(jobs => {
-          const rows = jobs.map(mapJobberJobToInsert);
+        .then(async jobs => {
+          const gasPrice = await fetchRaleighGasPrice();
+          const rows = await Promise.all(jobs.map(j => mapJobberJobToInsert(j, gasPrice)));
           const result = storage.upsertJobberJobs(rows);
-          console.log(`[Jobber] Initial sync: ${result.imported} imported, ${result.skipped} skipped`);
+          console.log(`[Jobber] Initial sync: ${result.imported} imported, ${result.skipped} skipped (gas $${gasPrice}/gal)`);
         })
         .catch(err => console.error("[Jobber] Initial sync error:", err));
 
@@ -342,7 +433,12 @@ export function registerRoutes(httpServer: Server, app: Express) {
     try {
       const token = await getValidAccessToken();
       const jobberJobs = await fetchAllJobberJobs(token);
-      const rows = jobberJobs.map(mapJobberJobToInsert);
+
+      // Fetch current Raleigh gas price once for the whole sync
+      const gasPrice = await fetchRaleighGasPrice();
+      console.log(`[Jobber] Using gas price: $${gasPrice}/gal`);
+
+      const rows = await Promise.all(jobberJobs.map(j => mapJobberJobToInsert(j, gasPrice)));
       const result = storage.upsertJobberJobs(rows);
 
       res.json({
@@ -350,8 +446,9 @@ export function registerRoutes(httpServer: Server, app: Express) {
         imported: result.imported,
         skipped:  result.skipped,
         total:    jobberJobs.length,
+        gasPrice,
         message:  result.imported > 0
-          ? `${result.imported} new job${result.imported !== 1 ? "s" : ""} imported from Jobber`
+          ? `${result.imported} new job${result.imported !== 1 ? "s" : ""} imported from Jobber (gas $${gasPrice}/gal)`
           : `Already up to date — ${result.skipped} job${result.skipped !== 1 ? "s" : ""} already synced`,
       });
     } catch (err: any) {
